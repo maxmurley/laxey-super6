@@ -472,13 +472,24 @@ export default function Home() {
     ]);
     const usernameById = {};
     (profs || []).forEach((p) => (usernameById[p.id] = p.username));
-    const predsWithUsername = (preds || []).map((p) => ({ ...p, username: usernameById[p.user_id] || null }));
+    const fixtureById = {};
+    (fx || []).forEach((f) => (fixtureById[f.id] = f));
+    const predsWithDetails = (preds || []).map((p) => {
+      const fixture = fixtureById[p.fixture_id];
+      return {
+        ...p,
+        username: usernameById[p.user_id] || null,
+        gameweek: fixture ? fixture.gameweek_id : null,
+        home_team: fixture ? fixture.home : null,
+        away_team: fixture ? fixture.away : null,
+      };
+    });
     const backup = {
       exported_at: new Date().toISOString(),
       profiles: profs || [],
       gameweeks: gws || [],
       fixtures: fx || [],
-      predictions: predsWithUsername,
+      predictions: predsWithDetails,
     };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
