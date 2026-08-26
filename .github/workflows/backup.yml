@@ -26,7 +26,11 @@ jobs:
           PROFILES=$(curl -s "$SUPABASE_URL/rest/v1/profiles?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
           GAMEWEEKS=$(curl -s "$SUPABASE_URL/rest/v1/gameweeks?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
           FIXTURES=$(curl -s "$SUPABASE_URL/rest/v1/fixtures?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
-          PREDICTIONS=$(curl -s "$SUPABASE_URL/rest/v1/predictions?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
+          PREDICTIONS_RAW=$(curl -s "$SUPABASE_URL/rest/v1/predictions?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
+
+          # attach each prediction's username so the backup is readable without a manual join
+          USERNAME_LOOKUP=$(echo "$PROFILES" | jq 'map({(.id): .username}) | add')
+          PREDICTIONS=$(echo "$PREDICTIONS_RAW" | jq --argjson lookup "$USERNAME_LOOKUP" 'map(. + {username: $lookup[.user_id]})')
 
           jq -n \
             --arg exported_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
