@@ -28,9 +28,11 @@ jobs:
           FIXTURES=$(curl -s "$SUPABASE_URL/rest/v1/fixtures?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
           PREDICTIONS_RAW=$(curl -s "$SUPABASE_URL/rest/v1/predictions?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
 
-          # attach each prediction's username so the backup is readable without a manual join
+          # attach each prediction's username and fixture details so the backup is readable without a manual join
           USERNAME_LOOKUP=$(echo "$PROFILES" | jq 'map({(.id): .username}) | add')
-          PREDICTIONS=$(echo "$PREDICTIONS_RAW" | jq --argjson lookup "$USERNAME_LOOKUP" 'map(. + {username: $lookup[.user_id]})')
+          FIXTURE_LOOKUP=$(echo "$FIXTURES" | jq 'map({(.id): {gameweek: .gameweek_id, home_team: .home, away_team: .away}}) | add')
+          PREDICTIONS=$(echo "$PREDICTIONS_RAW" | jq --argjson ulookup "$USERNAME_LOOKUP" --argjson flookup "$FIXTURE_LOOKUP" \
+            'map(. + {username: $ulookup[.user_id]} + ($flookup[.fixture_id] // {gameweek: null, home_team: null, away_team: null}))')
 
           jq -n \
             --arg exported_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
