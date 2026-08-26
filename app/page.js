@@ -244,6 +244,10 @@ export default function Home() {
       setLoginError("Fill in username, full name and password.");
       return;
     }
+    if (!/^[a-zA-Z0-9_]{3,20}$/.test(loginUsername.trim())) {
+      setLoginError("Usernames can only use letters, numbers and underscores, no spaces — try something like 'max' or 'mmurley'.");
+      return;
+    }
     const res = await fetch("/api/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -457,6 +461,34 @@ export default function Home() {
       setAdminImportText("");
       loadEverything();
     }
+  }
+
+  async function adminExportBackup() {
+    const [{ data: profs }, { data: gws }, { data: fx }, { data: preds }] = await Promise.all([
+      supabase.from("profiles").select("*"),
+      supabase.from("gameweeks").select("*"),
+      supabase.from("fixtures").select("*"),
+      supabase.from("predictions").select("*"),
+    ]);
+    const usernameById = {};
+    (profs || []).forEach((p) => (usernameById[p.id] = p.username));
+    const predsWithUsername = (preds || []).map((p) => ({ ...p, username: usernameById[p.user_id] || null }));
+    const backup = {
+      exported_at: new Date().toISOString(),
+      profiles: profs || [],
+      gameweeks: gws || [],
+      fixtures: fx || [],
+      predictions: predsWithUsername,
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `laxey-super6-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   async function openPlayerPredictions(row) {
@@ -755,6 +787,14 @@ export default function Home() {
         {/* ---------- ADMIN ---------- */}
         {view === "admin" && isAdmin && (
           <div className="space-y-8">
+            <div>
+              <SectionLabel>Backup</SectionLabel>
+              <div style={{ background: "#fff", borderColor: "#CFC6AE" }} className="rounded border p-3">
+                <p style={{ color: "#7a7566" }} className="text-xs mb-2">Downloads every player, fixture, and prediction as a JSON file — worth doing after each gameweek since the free database plan doesn&apos;t back up automatically.</p>
+                <button onClick={adminExportBackup} style={{ background: "#1B3A2B", color: "#F5F1E4", fontFamily: "'Oswald', sans-serif" }} className="px-4 py-2 rounded uppercase text-sm">Download backup</button>
+              </div>
+            </div>
+
             <div>
               <SectionLabel>Registered players — admin only</SectionLabel>
               <div style={{ background: "#fff", borderColor: "#CFC6AE" }} className="rounded border divide-y overflow-x-auto">
