@@ -1,0 +1,46 @@
+name: Weekly Supabase Backup
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC — change the cron value if you'd prefer a different day/time
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {} # lets you trigger it manually from the Actions tab any time
+
+permissions:
+  contents: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch data from Supabase and build backup file
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          mkdir -p backups
+          DATE=$(date +%Y-%m-%d)
+
+          PROFILES=$(curl -s "$SUPABASE_URL/rest/v1/profiles?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
+          GAMEWEEKS=$(curl -s "$SUPABASE_URL/rest/v1/gameweeks?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
+          FIXTURES=$(curl -s "$SUPABASE_URL/rest/v1/fixtures?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
+          PREDICTIONS=$(curl -s "$SUPABASE_URL/rest/v1/predictions?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
+
+          jq -n \
+            --arg exported_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --argjson profiles "$PROFILES" \
+            --argjson gameweeks "$GAMEWEEKS" \
+            --argjson fixtures "$FIXTURES" \
+            --argjson predictions "$PREDICTIONS" \
+            '{exported_at: $exported_at, profiles: $profiles, gameweeks: $gameweeks, fixtures: $fixtures, predictions: $predictions}' \
+            > "backups/backup-$DATE.json"
+
+      - name: Commit backup to the repo
+        run: |
+          git config user.name "laxey-super6-backup-bot"
+          git config user.email "backup-bot@users.noreply.github.com"
+          git add backups/
+          git diff --staged --quiet || git commit -m "Automated backup $(date +%Y-%m-%d)"
+          git push
