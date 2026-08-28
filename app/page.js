@@ -322,6 +322,17 @@ export default function Home() {
   }
 
   // ---- admin: fixtures ----
+  function localDateTimeToISO(localStr) {
+    // datetime-local inputs give "YYYY-MM-DDTHH:MM" with no timezone — parse the
+    // parts explicitly and let the Date constructor (which is always local-time)
+    // do the conversion, rather than trusting ambiguous string parsing.
+    if (!localStr) return null;
+    const [datePart, timePart] = localStr.split("T");
+    const [y, m, d] = datePart.split("-").map(Number);
+    const [hh, mm] = timePart.split(":").map(Number);
+    return new Date(y, m - 1, d, hh, mm).toISOString();
+  }
+
   async function adminAddFixture() {
     const { gw, home, away, kickoff } = adminNewFixture;
     if (!gw || !home || !away || !kickoff) {
@@ -329,7 +340,7 @@ export default function Home() {
       return;
     }
     await supabase.from("gameweeks").upsert({ id: gw }, { onConflict: "id", ignoreDuplicates: true });
-    const { error } = await supabase.from("fixtures").insert({ gameweek_id: gw, home, away, kickoff, status: "scheduled" });
+    const { error } = await supabase.from("fixtures").insert({ gameweek_id: gw, home, away, kickoff: localDateTimeToISO(kickoff), status: "scheduled" });
     if (error) {
       setAdminMsg(error.message);
     } else {
@@ -344,7 +355,7 @@ export default function Home() {
       setAdminMsg("Choose a gameweek and a lockout time.");
       return;
     }
-    const { error } = await supabase.from("gameweeks").upsert({ id: lockoutGw, lockout_at: lockoutValue }, { onConflict: "id" });
+    const { error } = await supabase.from("gameweeks").upsert({ id: lockoutGw, lockout_at: localDateTimeToISO(lockoutValue) }, { onConflict: "id" });
     if (error) setAdminMsg(error.message);
     else {
       setAdminMsg(`Lockout for ${lockoutGw} set.`);
@@ -393,8 +404,9 @@ export default function Home() {
 
   function excelDateToIso(d) {
     if (!(d instanceof Date) || isNaN(d)) return null;
-    const pad = (n) => String(n).padStart(2, "0");
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+    // same principle as localDateTimeToISO — treat the sheet's date/time as local
+    // wall-clock time and convert it correctly, rather than passing it through naive.
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes()).toISOString();
   }
 
   async function adminImportExcelFile(file) {
@@ -445,7 +457,7 @@ export default function Home() {
       const teamMatch = teams.split(/\s+vs\s+/i);
       if (teamMatch.length !== 2) return;
       gwSet.add(gw);
-      toInsert.push({ gameweek_id: gw, home: teamMatch[0].trim(), away: teamMatch[1].trim(), kickoff, status: "scheduled" });
+      toInsert.push({ gameweek_id: gw, home: teamMatch[0].trim(), away: teamMatch[1].trim(), kickoff: localDateTimeToISO(kickoff.length === 16 ? kickoff : kickoff.slice(0, 16)), status: "scheduled" });
     });
     if (toInsert.length === 0) {
       setAdminMsg("No fixtures parsed. Use format: GW2 | Team A vs Team B | 2026-08-24T14:30");
