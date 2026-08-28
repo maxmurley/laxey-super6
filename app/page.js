@@ -149,6 +149,9 @@ export default function Home() {
   const [confirmRemoveId, setConfirmRemoveId] = useState(null);
   const [earlyOverride, setEarlyOverride] = useState({});
   const [draftResults, setDraftResults] = useState({});
+  const [resetPasswordFor, setResetPasswordFor] = useState(null);
+  const [newPasswordValue, setNewPasswordValue] = useState("");
+  const [resetMsg, setResetMsg] = useState("");
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 15000);
@@ -572,6 +575,31 @@ export default function Home() {
     URL.revokeObjectURL(url);
   }
 
+  async function adminResetPlayerPassword(targetUserId) {
+    if (!newPasswordValue || newPasswordValue.length < 6) {
+      setResetMsg("Password must be at least 6 characters.");
+      return;
+    }
+    const { data: sessionData } = await supabase.auth.getSession();
+    const res = await fetch("/api/admin-reset-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        targetUserId,
+        newPassword: newPasswordValue,
+        callerAccessToken: sessionData?.session?.access_token,
+      }),
+    });
+    const result = await res.json();
+    if (!res.ok || result.error) {
+      setResetMsg(result.error || "Something went wrong.");
+      return;
+    }
+    setResetMsg("Password updated — let them know their new password.");
+    setResetPasswordFor(null);
+    setNewPasswordValue("");
+  }
+
   async function openPlayerPredictions(row) {
     setAdminViewPlayer(row);
     const { data } = await supabase.from("predictions").select("*").eq("user_id", row.user_id);
@@ -887,6 +915,7 @@ export default function Home() {
                     <tr style={{ color: "#7a7566" }} className="text-left text-[11px] uppercase">
                       <th className="px-3 py-2">Username</th>
                       <th className="px-3 py-2">Full name</th>
+                      <th className="px-3 py-2">Password</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -894,11 +923,30 @@ export default function Home() {
                       <tr key={p.id} style={{ borderColor: "#CFC6AE" }} className="border-t">
                         <td className="px-3 py-2" style={{ color: "#1B3A2B" }}>{p.username}</td>
                         <td className="px-3 py-2">{p.full_name}</td>
+                        <td className="px-3 py-2">
+                          {resetPasswordFor === p.id ? (
+                            <div className="flex items-center gap-1 flex-wrap">
+                              <input
+                                type="text"
+                                value={newPasswordValue}
+                                onChange={(e) => setNewPasswordValue(e.target.value)}
+                                placeholder="New password"
+                                className="w-28 px-1 py-1 rounded border text-xs"
+                                style={{ borderColor: "#CFC6AE" }}
+                              />
+                              <button onClick={() => adminResetPlayerPassword(p.id)} style={{ background: "#1B3A2B", color: "#F5F1E4", fontFamily: "'IBM Plex Mono', monospace" }} className="text-[11px] px-2 py-1 rounded uppercase">Save</button>
+                              <button onClick={() => { setResetPasswordFor(null); setNewPasswordValue(""); setResetMsg(""); }} style={{ color: "#7a7566", borderColor: "#CFC6AE" }} className="text-[11px] px-2 py-1 rounded border uppercase">Cancel</button>
+                            </div>
+                          ) : (
+                            <button onClick={() => { setResetPasswordFor(p.id); setNewPasswordValue(""); setResetMsg(""); }} style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#E8A33D", borderColor: "#E8A33D" }} className="text-[11px] px-2 py-1 rounded border uppercase">Reset password</button>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+              {resetMsg && <p style={{ color: "#3f7a4d" }} className="text-xs mt-2">{resetMsg}</p>}
             </div>
 
             <div>
