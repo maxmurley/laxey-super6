@@ -514,6 +514,64 @@ export default function Home() {
     URL.revokeObjectURL(url);
   }
 
+  async function adminExportBackupExcel() {
+    const [{ data: profs }, { data: fx }, { data: preds }] = await Promise.all([
+      supabase.from("profiles").select("*"),
+      supabase.from("fixtures").select("*"),
+      supabase.from("predictions").select("*"),
+    ]);
+    const usernameById = {};
+    const fullNameById = {};
+    (profs || []).forEach((p) => {
+      usernameById[p.id] = p.username;
+      fullNameById[p.id] = p.full_name;
+    });
+    const fixtureById = {};
+    (fx || []).forEach((f) => (fixtureById[f.id] = f));
+
+    const rows = (preds || [])
+      .map((p) => {
+        const fixture = fixtureById[p.fixture_id];
+        if (!fixture) return null;
+        const points = finalPoints(
+          { home_score: p.home_score, away_score: p.away_score, joker: p.joker },
+          { status: fixture.status, home_score: fixture.home_score, away_score: fixture.away_score }
+        );
+        return {
+          Gameweek: fixture.gameweek_id,
+          Username: usernameById[p.user_id] || "",
+          "Full Name": fullNameById[p.user_id] || "",
+          "Home Team": fixture.home,
+          "Away Team": fixture.away,
+          Kickoff: new Date(fixture.kickoff).toLocaleString("en-GB"),
+          "Predicted Score": `${p.home_score} - ${p.away_score}`,
+          "Actual Score": fixture.status === "FT" ? `${fixture.home_score} - ${fixture.away_score}` : fixture.status === "postponed" ? "Postponed" : "Pending",
+          Joker: p.joker ? "Yes" : "",
+          Points: points,
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => (a.Gameweek === b.Gameweek ? a.Username.localeCompare(b.Username) : String(a.Gameweek).localeCompare(String(b.Gameweek))));
+
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws["!cols"] = [
+      { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 18 }, { wch: 18 },
+      { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 8 }, { wch: 8 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Predictions");
+    const wbArray = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([wbArray], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `laxey-super6-predictions-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   async function openPlayerPredictions(row) {
     setAdminViewPlayer(row);
     const { data } = await supabase.from("predictions").select("*").eq("user_id", row.user_id);
@@ -814,7 +872,10 @@ export default function Home() {
               <SectionLabel>Backup</SectionLabel>
               <div style={{ background: "#fff", borderColor: "#CFC6AE" }} className="rounded border p-3">
                 <p style={{ color: "#7a7566" }} className="text-xs mb-2">Downloads every player, fixture, and prediction as a JSON file — worth doing after each gameweek since the free database plan doesn&apos;t back up automatically.</p>
-                <button onClick={adminExportBackup} style={{ background: "#1B3A2B", color: "#F5F1E4", fontFamily: "'Oswald', sans-serif" }} className="px-4 py-2 rounded uppercase text-sm">Download backup</button>
+                <div className="flex gap-2 flex-wrap">
+                  <button onClick={adminExportBackup} style={{ background: "#1B3A2B", color: "#F5F1E4", fontFamily: "'Oswald', sans-serif" }} className="px-4 py-2 rounded uppercase text-sm">Download backup (JSON)</button>
+                  <button onClick={adminExportBackupExcel} style={{ background: "#E8A33D", color: "#12201A", fontFamily: "'Oswald', sans-serif" }} className="px-4 py-2 rounded uppercase text-sm">Download predictions (Excel)</button>
+                </div>
               </div>
             </div>
 
