@@ -152,6 +152,7 @@ export default function Home() {
   const [resetPasswordFor, setResetPasswordFor] = useState(null);
   const [newPasswordValue, setNewPasswordValue] = useState("");
   const [resetMsg, setResetMsg] = useState("");
+  const [confirmRemoveUserId, setConfirmRemoveUserId] = useState(null);
 
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 15000);
@@ -600,6 +601,69 @@ export default function Home() {
     setNewPasswordValue("");
   }
 
+  async function adminRemovePlayer(targetUserId) {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const res = await fetch("/api/admin-delete-user", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ targetUserId, callerAccessToken: sessionData?.session?.access_token }),
+    });
+    const result = await res.json();
+    if (!res.ok || result.error) {
+      setResetMsg(result.error || "Something went wrong.");
+      setConfirmRemoveUserId(null);
+      return;
+    }
+    setResetMsg("Player removed — their account and predictions are gone.");
+    setConfirmRemoveUserId(null);
+    loadEverything();
+  }
+
+  async function adminExportLeaderboardExcel() {
+    const overallRes = await supabase.rpc("get_leaderboard", { p_gameweek: null, p_month: null });
+    const overallRows = (overallRes.data || [])
+      .map((r, i) => ({
+        Rank: i + 1,
+        Username: r.username,
+        "Full Name": profiles[r.user_id]?.full_name || "",
+        Points: r.points,
+        "Perfect Scores": r.perfects,
+      }));
+
+    const wb = XLSX.utils.book_new();
+    const overallWs = XLSX.utils.json_to_sheet(overallRows);
+    overallWs["!cols"] = [{ wch: 6 }, { wch: 14 }, { wch: 16 }, { wch: 8 }, { wch: 14 }];
+    XLSX.utils.book_append_sheet(wb, overallWs, "Overall");
+
+    for (const gw of gameweeks) {
+      const gwRes = await supabase.rpc("get_leaderboard", { p_gameweek: gw.id, p_month: null });
+      const gwRows = (gwRes.data || [])
+        .map((r, i) => ({
+          Rank: i + 1,
+          Username: r.username,
+          "Full Name": profiles[r.user_id]?.full_name || "",
+          Points: r.points,
+          "Perfect Scores": r.perfects,
+        }));
+      const ws = XLSX.utils.json_to_sheet(gwRows);
+      ws["!cols"] = [{ wch: 6 }, { wch: 14 }, { wch: 16 }, { wch: 8 }, { wch: 14 }];
+      // sheet names can't exceed 31 chars or contain certain characters
+      const sheetName = gw.id.slice(0, 31);
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    }
+
+    const wbArray = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+    const blob = new Blob([wbArray], { type: "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `laxey-super6-leaderboard-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
   async function openPlayerPredictions(row) {
     setAdminViewPlayer(row);
     const { data } = await supabase.from("predictions").select("*").eq("user_id", row.user_id);
@@ -903,6 +967,7 @@ export default function Home() {
                 <div className="flex gap-2 flex-wrap">
                   <button onClick={adminExportBackup} style={{ background: "#1B3A2B", color: "#F5F1E4", fontFamily: "'Oswald', sans-serif" }} className="px-4 py-2 rounded uppercase text-sm">Download backup (JSON)</button>
                   <button onClick={adminExportBackupExcel} style={{ background: "#E8A33D", color: "#12201A", fontFamily: "'Oswald', sans-serif" }} className="px-4 py-2 rounded uppercase text-sm">Download predictions (Excel)</button>
+                  <button onClick={adminExportLeaderboardExcel} style={{ background: "#3f7a4d", color: "#F5F1E4", fontFamily: "'Oswald', sans-serif" }} className="px-4 py-2 rounded uppercase text-sm">Download leaderboard (Excel)</button>
                 </div>
               </div>
             </div>
@@ -916,6 +981,7 @@ export default function Home() {
                       <th className="px-3 py-2">Username</th>
                       <th className="px-3 py-2">Full name</th>
                       <th className="px-3 py-2">Password</th>
+                      <th className="px-3 py-2">Remove</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -939,6 +1005,16 @@ export default function Home() {
                             </div>
                           ) : (
                             <button onClick={() => { setResetPasswordFor(p.id); setNewPasswordValue(""); setResetMsg(""); }} style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#E8A33D", borderColor: "#E8A33D" }} className="text-[11px] px-2 py-1 rounded border uppercase">Reset password</button>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          {confirmRemoveUserId === p.id ? (
+                            <div className="flex items-center gap-1 flex-wrap">
+                              <button onClick={() => adminRemovePlayer(p.id)} style={{ background: "#C1443B", color: "#fff", fontFamily: "'IBM Plex Mono', monospace" }} className="text-[11px] px-2 py-1 rounded uppercase">Tap to confirm</button>
+                              <button onClick={() => setConfirmRemoveUserId(null)} style={{ color: "#7a7566", borderColor: "#CFC6AE" }} className="text-[11px] px-2 py-1 rounded border uppercase">Cancel</button>
+                            </div>
+                          ) : (
+                            <button onClick={() => { setConfirmRemoveUserId(p.id); setResetMsg(""); }} style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#7a7566", borderColor: "#CFC6AE" }} className="text-[11px] px-2 py-1 rounded border uppercase">Remove</button>
                           )}
                         </td>
                       </tr>
