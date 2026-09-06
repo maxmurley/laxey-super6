@@ -1227,6 +1227,7 @@ export default function Home() {
                     <input type="number" value={adminActualLaxeyGoals} onChange={(e) => setAdminActualLaxeyGoals(e.target.value)} placeholder="e.g. 45" className="w-24 px-2 py-1 rounded border text-sm" style={{ borderColor: "#CFC6AE" }} />
                     <button onClick={adminSaveActualLaxeyGoals} style={{ background: "#E8A33D", color: "#12201A", fontFamily: "'Oswald', sans-serif" }} className="px-4 rounded uppercase text-sm">Save</button>
                   </div>
+                </div>
 
                 <div>
                   <p style={{ color: "#7a7566" }} className="text-xs mb-1">Players who've submitted (locked in):</p>
