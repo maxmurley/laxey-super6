@@ -98,7 +98,7 @@ function LeaderboardTable({ rows, currentUserId, isAdmin, onSelectPlayer }) {
           </div>
           <div className="text-right">
             <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#1B3A2B" }} className="text-sm font-semibold">{r.points} pts</span>
-            <p style={{ color: "#7a7566" }} className="text-[10px]">{r.perfects} perfect</p>
+            {r.perfects !== undefined && <p style={{ color: "#7a7566" }} className="text-[10px]">{r.perfects} perfect</p>}
           </div>
         </div>
       ))}
@@ -119,6 +119,17 @@ export default function Home() {
   const [now, setNow] = useState(new Date());
 
   const [view, setView] = useState("predict");
+  const [teams, setTeams] = useState([]);
+  const [myTableOrder, setMyTableOrder] = useState([]); // array of team ids, ranked 1st..last
+  const [tableLocked, setTableLocked] = useState(false);
+  const [tableBoard, setTableBoard] = useState([]);
+  const [tableMsg, setTableMsg] = useState("");
+  const [adminNewTeamName, setAdminNewTeamName] = useState("");
+  const [adminFinalOrder, setAdminFinalOrder] = useState([]); // team ids, for setting the real final table
+  const [tableSubmittedByMe, setTableSubmittedByMe] = useState(false);
+  const [playerTableLocks, setPlayerTableLocks] = useState({}); // user_id -> lock row (includes their goals guess)
+  const [laxeyGoalsGuess, setLaxeyGoalsGuess] = useState("");
+  const [adminActualLaxeyGoals, setAdminActualLaxeyGoals] = useState("");
 
   // auth form state
   const [loginUsername, setLoginUsername] = useState("");
@@ -181,11 +192,15 @@ export default function Home() {
   }, [session]);
 
   async function loadEverything() {
-    const [{ data: profs }, { data: gws }, { data: fx }, { data: myPreds }] = await Promise.all([
+    const [{ data: profs }, { data: gws }, { data: fx }, { data: myPreds }, { data: teamsData }, { data: settings }, { data: myTablePreds }, { data: tableLocks }] = await Promise.all([
       supabase.from("profiles").select("*"),
       supabase.from("gameweeks").select("*").order("id"),
       supabase.from("fixtures").select("*").order("kickoff"),
       supabase.from("predictions").select("*").eq("user_id", session.user.id),
+      supabase.from("teams").select("*").order("name"),
+      supabase.from("app_settings").select("*").limit(1).single(),
+      supabase.from("table_predictions").select("*").eq("user_id", session.user.id),
+      supabase.from("table_prediction_locks").select("*"),
     ]);
 
     const profMap = {};
@@ -199,11 +214,40 @@ export default function Home() {
     (myPreds || []).forEach((p) => (predMap[p.fixture_id] = p));
     setMyPredictions(predMap);
 
+    const teamsList = teamsData || [];
+    setTeams(teamsList);
+    setTableLocked(!!settings?.table_predictions_locked);
+    setAdminFinalOrder(
+      teamsList.slice().sort((a, b) => (a.actual_position ?? 999) - (b.actual_position ?? 999)).map((t) => t.id)
+    );
+
+    if (myTablePreds && myTablePreds.length > 0) {
+      const ordered = myTablePreds.slice().sort((a, b) => a.predicted_position - b.predicted_position).map((tp) => tp.team_id);
+      setMyTableOrder(ordered);
+    } else {
+      setMyTableOrder(teamsList.map((t) => t.id));
+    }
+
+    const lockMap = {};
+    (tableLocks || []).forEach((l) => (lockMap[l.user_id] = l));
+    setPlayerTableLocks(lockMap);
+    const myLock = lockMap[session.user.id];
+    setTableSubmittedByMe(!!myLock);
+    if (myLock?.laxey_goals_guess !== undefined && myLock?.laxey_goals_guess !== null) {
+      setLaxeyGoalsGuess(String(myLock.laxey_goals_guess));
+    }
+    setAdminActualLaxeyGoals(settings?.laxey_actual_goals ?? "");
+
     if ((gws || []).length > 0) {
       setSelectedGW((prev) => prev || gws[0].id);
       setBoardGW((prev) => prev || gws[0].id);
       setLockoutGw((prev) => prev || gws[0].id);
     }
+  }
+
+  async function refreshTableBoard() {
+    const res = await supabase.rpc("get_table_prediction_leaderboard");
+    setTableBoard(res.data || []);
   }
 
   const allMonths = useMemo(() => {
@@ -221,6 +265,11 @@ export default function Home() {
     if (!session) return;
     supabase.rpc("get_leaderboard", { p_gameweek: null, p_month: null }).then(({ data }) => setOverallBoard(data || []));
   }, [session, fixtures, myPredictions]);
+
+  useEffect(() => {
+    if (!session) return;
+    refreshTableBoard();
+  }, [session, teams]);
 
   useEffect(() => {
     if (!session || !boardGW) return;
@@ -664,6 +713,97 @@ export default function Home() {
     URL.revokeObjectURL(url);
   }
 
+  function moveTeam(order, setOrder, index, direction) {
+    const next = [...order];
+    const swapWith = index + direction;
+    if (swapWith < 0 || swapWith >= next.length) return;
+    [next[index], next[swapWith]] = [next[swapWith], next[index]];
+    setOrder(next);
+  }
+
+  async function submitTablePrediction() {
+    if (tableLocked) {
+      setTableMsg("Table predictions are currently closed.");
+      return;
+    }
+    if (tableSubmittedByMe) {
+      setTableMsg("You've already submitted — it's locked in.");
+      return;
+    }
+    if (laxeyGoalsGuess === "" || isNaN(Number(laxeyGoalsGuess))) {
+      setTableMsg("Enter your tiebreaker guess — how many goals will Laxey score?");
+      return;
+    }
+    const rows = myTableOrder.map((teamId, i) => ({
+      user_id: session.user.id,
+      team_id: teamId,
+      predicted_position: i + 1,
+    }));
+    const { error } = await supabase.from("table_predictions").upsert(rows, { onConflict: "user_id,team_id" });
+    if (error) {
+      setTableMsg(error.message);
+      return;
+    }
+    const { error: lockError } = await supabase.from("table_prediction_locks").insert({ user_id: session.user.id, laxey_goals_guess: Number(laxeyGoalsGuess) });
+    if (lockError) {
+      setTableMsg(lockError.message);
+      return;
+    }
+    setTableSubmittedByMe(true);
+    setTableMsg("Your final table prediction is locked in — no further changes.");
+    refreshTableBoard();
+  }
+
+  async function adminSaveActualLaxeyGoals() {
+    if (adminActualLaxeyGoals === "" || isNaN(Number(adminActualLaxeyGoals))) {
+      setTableMsg("Enter a valid number of goals.");
+      return;
+    }
+    const { error } = await supabase.from("app_settings").update({ laxey_actual_goals: Number(adminActualLaxeyGoals) }).eq("id", true);
+    if (error) {
+      setTableMsg(error.message);
+      return;
+    }
+    setTableMsg("Actual Laxey goals saved — tie-breaks now apply.");
+    refreshTableBoard();
+  }
+
+  async function adminUnlockPlayerTable(userId) {
+    const { error } = await supabase.from("table_prediction_locks").delete().eq("user_id", userId);
+    if (error) {
+      setTableMsg(error.message);
+      return;
+    }
+    loadEverything();
+  }
+
+  async function adminToggleTableLock() {
+    const { error } = await supabase.from("app_settings").update({ table_predictions_locked: !tableLocked }).eq("id", true);
+    if (error) {
+      setTableMsg(error.message);
+      return;
+    }
+    setTableLocked(!tableLocked);
+  }
+
+  async function adminAddTeam() {
+    if (!adminNewTeamName.trim()) return;
+    const { error } = await supabase.from("teams").insert({ name: adminNewTeamName.trim() });
+    if (error) {
+      setTableMsg(error.message);
+      return;
+    }
+    setAdminNewTeamName("");
+    loadEverything();
+  }
+
+  async function adminSaveFinalTable() {
+    const updates = adminFinalOrder.map((teamId, i) => supabase.from("teams").update({ actual_position: i + 1 }).eq("id", teamId));
+    await Promise.all(updates);
+    setTableMsg("Final table saved — table prediction points are now calculated.");
+    refreshTableBoard();
+  }
+
   async function openPlayerPredictions(row) {
     setAdminViewPlayer(row);
     const { data } = await supabase.from("predictions").select("*").eq("user_id", row.user_id);
@@ -735,6 +875,7 @@ export default function Home() {
         <TabButton active={view === "predict"} onClick={() => setView("predict")}>Predict</TabButton>
         <TabButton active={view === "leaderboard"} onClick={() => setView("leaderboard")}>Leaderboard</TabButton>
         <TabButton active={view === "rules"} onClick={() => setView("rules")}>How to Play</TabButton>
+        <TabButton active={view === "table"} onClick={() => setView("table")}>Predict Table</TabButton>
         {isAdmin && <TabButton active={view === "admin"} onClick={() => setView("admin")}>Admin</TabButton>}
         <TabButton active={view === "account"} onClick={() => setView("account")}>Account</TabButton>
       </div>
@@ -954,12 +1095,163 @@ export default function Home() {
                 <p style={{ color: "#1B3A2B" }} className="text-sm leading-relaxed">Weekly, monthly and overall tables. Level on points? Most exact scores ranks higher.</p>
               </div>
             </div>
+
+            <div>
+              <SectionLabel>Predict the table</SectionLabel>
+              <div style={{ background: "#fff", borderColor: "#CFC6AE" }} className="rounded border p-3">
+                <p style={{ color: "#1B3A2B" }} className="text-sm leading-relaxed">Rank all 13 clubs for how you think the season finishes. 3 points for the exact final position, 1 point if you're off by one place. Reorder as much as you like before submitting — but once you hit submit, it's locked in for the season.</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ---------- PREDICT TABLE ---------- */}
+        {view === "table" && (
+          <div>
+            <SectionLabel>Predict the final table</SectionLabel>
+            <p style={{ color: "#7a7566" }} className="text-xs mb-3">
+              Rank every club from 1st to last for how you think the season finishes. 3 points for the exact final position, 1 point if you're off by just one place. One submission only — once you hit submit, it's locked in for the season.
+              {tableLocked && !tableSubmittedByMe && <span style={{ color: "#C1443B" }} className="font-semibold"> Predictions are currently closed.</span>}
+              {tableSubmittedByMe && <span style={{ color: "#3f7a4d" }} className="font-semibold"> You've submitted — locked in.</span>}
+            </p>
+
+            <div style={{ background: "#fff", borderColor: "#CFC6AE" }} className="rounded border divide-y mb-4">
+              {myTableOrder.map((teamId, i) => {
+                const team = teams.find((t) => t.id === teamId);
+                if (!team) return null;
+                const editable = !tableLocked && !tableSubmittedByMe;
+                return (
+                  <div key={teamId} style={{ borderColor: "#CFC6AE" }} className="flex items-center justify-between px-3 py-2">
+                    <div className="flex items-center gap-3">
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#7a7566" }} className="text-sm w-6">{i + 1}</span>
+                      <span style={{ fontFamily: "'Oswald', sans-serif", color: "#1B3A2B" }} className="text-sm uppercase">{team.name}</span>
+                    </div>
+                    <div className="flex gap-1">
+                      <button disabled={!editable} onClick={() => moveTeam(myTableOrder, setMyTableOrder, i, -1)} style={{ color: "#1B3A2B" }} className="w-7 h-7 text-sm font-bold disabled:opacity-30">▲</button>
+                      <button disabled={!editable} onClick={() => moveTeam(myTableOrder, setMyTableOrder, i, 1)} style={{ color: "#1B3A2B" }} className="w-7 h-7 text-sm font-bold disabled:opacity-30">▼</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={{ background: "#fff", borderColor: "#CFC6AE" }} className="rounded border p-3 mb-4">
+              <p style={{ fontFamily: "'Oswald', sans-serif", color: "#1B3A2B" }} className="text-sm uppercase mb-2">Tiebreaker: How many goals will Laxey score this season?</p>
+              <input
+                type="number"
+                value={laxeyGoalsGuess}
+                onChange={(e) => setLaxeyGoalsGuess(e.target.value)}
+                disabled={tableLocked || tableSubmittedByMe}
+                placeholder="e.g. 45"
+                className="w-24 px-2 py-1 rounded border text-sm"
+                style={{ borderColor: "#CFC6AE" }}
+              />
+            </div>
+
+            {!tableLocked && !tableSubmittedByMe && (
+              <button onClick={submitTablePrediction} style={{ background: "#1B3A2B", color: "#F5F1E4", fontFamily: "'Oswald', sans-serif" }} className="w-full py-2 rounded uppercase text-sm mb-2">
+                Submit final prediction
+              </button>
+            )}
+            {tableMsg && <p style={{ color: "#3f7a4d" }} className="text-xs mb-4">{tableMsg}</p>}
+
+            <div className="mt-6">
+              <SectionLabel>Table prediction leaderboard</SectionLabel>
+              <div style={{ background: "#fff", borderColor: "#CFC6AE" }} className="rounded border divide-y">
+                {tableBoard.map((r, i) => (
+                  <div key={r.user_id} style={{ borderColor: "#CFC6AE", background: r.user_id === session.user.id ? "#FBF3DF" : "transparent" }} className="flex items-center justify-between px-3 py-2.5">
+                    <div className="flex items-center gap-3">
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: i < 3 ? "#E8A33D" : "#7a7566" }} className="text-sm w-5 font-semibold">{i + 1}</span>
+                      <span style={{ fontFamily: "'Oswald', sans-serif", color: "#1B3A2B" }} className="text-sm uppercase">{r.username}</span>
+                    </div>
+                    <div className="text-right">
+                      <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#1B3A2B" }} className="text-sm font-semibold">{r.points} pts</span>
+                      {r.laxey_goals_guess !== null && r.laxey_goals_guess !== undefined && (
+                        <p style={{ color: "#7a7566" }} className="text-[10px]">Guessed {r.laxey_goals_guess} goals</p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {tableBoard.length === 0 && <p className="px-3 py-3 text-sm text-center" style={{ color: "#7a7566" }}>No data yet.</p>}
+              </div>
+              <p style={{ color: "#7a7566" }} className="text-[11px] mt-2">Ties are broken by whoever's goals guess is closest to Laxey's actual season tally.</p>
+            </div>
           </div>
         )}
 
         {/* ---------- ADMIN ---------- */}
         {view === "admin" && isAdmin && (
           <div className="space-y-8">
+            <div>
+              <SectionLabel>Final table prediction</SectionLabel>
+              <div style={{ background: "#fff", borderColor: "#CFC6AE" }} className="rounded border p-3 space-y-3">
+                <button
+                  onClick={adminToggleTableLock}
+                  style={{ background: tableLocked ? "#3f7a4d" : "#C1443B", color: "#fff", fontFamily: "'Oswald', sans-serif" }}
+                  className="px-4 py-2 rounded uppercase text-sm"
+                >
+                  {tableLocked ? "Reopen table predictions" : "Close table predictions"}
+                </button>
+
+                <div>
+                  <p style={{ color: "#7a7566" }} className="text-xs mb-1">Add a club (only if one's missing):</p>
+                  <div className="flex gap-2">
+                    <input value={adminNewTeamName} onChange={(e) => setAdminNewTeamName(e.target.value)} placeholder="Club name" className="flex-1 px-2 py-2 rounded border text-sm" style={{ borderColor: "#CFC6AE" }} />
+                    <button onClick={adminAddTeam} style={{ background: "#E8A33D", color: "#12201A", fontFamily: "'Oswald', sans-serif" }} className="px-4 rounded uppercase text-sm">Add</button>
+                  </div>
+                </div>
+
+                <div>
+                  <p style={{ color: "#7a7566" }} className="text-xs mb-1">Set the real final table (only once the season's actually finished):</p>
+                  <div style={{ borderColor: "#CFC6AE" }} className="rounded border divide-y">
+                    {adminFinalOrder.map((teamId, i) => {
+                      const team = teams.find((t) => t.id === teamId);
+                      if (!team) return null;
+                      return (
+                        <div key={teamId} style={{ borderColor: "#CFC6AE" }} className="flex items-center justify-between px-2 py-1.5">
+                          <span className="text-xs" style={{ color: "#1B3A2B" }}>{i + 1}. {team.name}</span>
+                          <div className="flex gap-1">
+                            <button onClick={() => moveTeam(adminFinalOrder, setAdminFinalOrder, i, -1)} style={{ color: "#1B3A2B" }} className="w-6 h-6 text-xs font-bold">▲</button>
+                            <button onClick={() => moveTeam(adminFinalOrder, setAdminFinalOrder, i, 1)} style={{ color: "#1B3A2B" }} className="w-6 h-6 text-xs font-bold">▼</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button onClick={adminSaveFinalTable} style={{ background: "#1B3A2B", color: "#F5F1E4", fontFamily: "'Oswald', sans-serif" }} className="mt-2 px-4 py-2 rounded uppercase text-sm">Save final table</button>
+                </div>
+
+                <div>
+                  <p style={{ color: "#7a7566" }} className="text-xs mb-1">Actual Laxey goals this season (for the tiebreaker, once the season's done):</p>
+                  <div className="flex gap-2">
+                    <input type="number" value={adminActualLaxeyGoals} onChange={(e) => setAdminActualLaxeyGoals(e.target.value)} placeholder="e.g. 45" className="w-24 px-2 py-1 rounded border text-sm" style={{ borderColor: "#CFC6AE" }} />
+                    <button onClick={adminSaveActualLaxeyGoals} style={{ background: "#E8A33D", color: "#12201A", fontFamily: "'Oswald', sans-serif" }} className="px-4 rounded uppercase text-sm">Save</button>
+                  </div>
+
+                <div>
+                  <p style={{ color: "#7a7566" }} className="text-xs mb-1">Players who've submitted (locked in):</p>
+                  <div style={{ borderColor: "#CFC6AE" }} className="rounded border divide-y">
+                    {Object.values(profiles).filter((p) => !p.is_admin).map((p) => (
+                      <div key={p.id} style={{ borderColor: "#CFC6AE" }} className="flex items-center justify-between px-2 py-1.5">
+                        <span className="text-xs" style={{ color: "#1B3A2B" }}>
+                          {p.username}
+                          {playerTableLocks[p.id]?.laxey_goals_guess !== undefined && playerTableLocks[p.id]?.laxey_goals_guess !== null && (
+                            <span style={{ color: "#7a7566" }}> — guessed {playerTableLocks[p.id].laxey_goals_guess} goals</span>
+                          )}
+                        </span>
+                        {playerTableLocks[p.id] ? (
+                          <button onClick={() => adminUnlockPlayerTable(p.id)} style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#E8A33D", borderColor: "#E8A33D" }} className="text-[11px] px-2 py-1 rounded border uppercase">Unlock to redo</button>
+                        ) : (
+                          <span className="text-[11px]" style={{ color: "#7a7566" }}>Not submitted yet</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {tableMsg && <p style={{ color: "#3f7a4d" }} className="text-xs">{tableMsg}</p>}
+              </div>
+            </div>
+
             <div>
               <SectionLabel>Backup</SectionLabel>
               <div style={{ background: "#fff", borderColor: "#CFC6AE" }} className="rounded border p-3">
