@@ -194,7 +194,7 @@ export default function Home() {
   async function loadEverything() {
     const [{ data: profs }, { data: gws }, { data: fx }, { data: myPreds }, { data: teamsData }, { data: settings }, { data: myTablePreds }, { data: tableLocks }] = await Promise.all([
       supabase.from("profiles").select("*"),
-      supabase.from("gameweeks").select("*").order("id"),
+      supabase.from("gameweeks").select("*").order("week_number", { ascending: true, nullsFirst: false }),
       supabase.from("fixtures").select("*").order("kickoff"),
       supabase.from("predictions").select("*").eq("user_id", session.user.id),
       supabase.from("teams").select("*").order("name"),
