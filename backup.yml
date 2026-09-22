@@ -1,0 +1,61 @@
+name: Weekly Supabase Backup
+
+on:
+  schedule:
+    # Every Monday at 06:00 UTC — change the cron value if you'd prefer a different day/time
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {} # lets you trigger it manually from the Actions tab any time
+
+permissions:
+  contents: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch data from Supabase and build backup file
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          mkdir -p backups tmp
+          DATE=$(date +%Y-%m-%d)
+
+          # Save each response straight to a file rather than a shell variable —
+          # passing large JSON as a command-line argument breaks once the season's
+          # data grows past the OS's argument-length limit (this is what broke).
+          curl -s "$SUPABASE_URL/rest/v1/profiles?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -o tmp/profiles.json
+          curl -s "$SUPABASE_URL/rest/v1/gameweeks?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -o tmp/gameweeks.json
+          curl -s "$SUPABASE_URL/rest/v1/fixtures?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -o tmp/fixtures.json
+          curl -s "$SUPABASE_URL/rest/v1/predictions?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -o tmp/predictions_raw.json
+
+          # build username/fixture lookups as files too
+          jq '[.[] | {(.id): .username}] | add' tmp/profiles.json > tmp/username_lookup.json
+          jq '[.[] | {(.id): {gameweek: .gameweek_id, home_team: .home, away_team: .away}}] | add' tmp/fixtures.json > tmp/fixture_lookup.json
+
+          # enrich predictions with username + fixture details, reading lookups via --slurpfile
+          # (a file path, not an inline argument) so there's no size ceiling
+          jq --slurpfile ulookup tmp/username_lookup.json --slurpfile flookup tmp/fixture_lookup.json \
+            'map(. + {username: $ulookup[0][.user_id]} + ($flookup[0][.fixture_id] // {gameweek: null, home_team: null, away_team: null}))' \
+            tmp/predictions_raw.json > tmp/predictions.json
+
+          jq -n \
+            --arg exported_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --slurpfile profiles tmp/profiles.json \
+            --slurpfile gameweeks tmp/gameweeks.json \
+            --slurpfile fixtures tmp/fixtures.json \
+            --slurpfile predictions tmp/predictions.json \
+            '{exported_at: $exported_at, profiles: $profiles[0], gameweeks: $gameweeks[0], fixtures: $fixtures[0], predictions: $predictions[0]}' \
+            > "backups/backup-$DATE.json"
+
+          rm -rf tmp
+
+      - name: Commit backup to the repo
+        run: |
+          git config user.name "laxey-super6-backup-bot"
+          git config user.email "backup-bot@users.noreply.github.com"
+          git add backups/
+          git diff --staged --quiet || git commit -m "Automated backup $(date +%Y-%m-%d)"
+          git push
