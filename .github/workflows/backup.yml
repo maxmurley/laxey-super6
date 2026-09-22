@@ -20,28 +20,37 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: |
-          mkdir -p backups
+          mkdir -p backups tmp
           DATE=$(date +%Y-%m-%d)
 
-          PROFILES=$(curl -s "$SUPABASE_URL/rest/v1/profiles?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
-          GAMEWEEKS=$(curl -s "$SUPABASE_URL/rest/v1/gameweeks?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
-          FIXTURES=$(curl -s "$SUPABASE_URL/rest/v1/fixtures?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
-          PREDICTIONS_RAW=$(curl -s "$SUPABASE_URL/rest/v1/predictions?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY")
+          # Save each response straight to a file rather than a shell variable —
+          # passing large JSON as a command-line argument breaks once the season's
+          # data grows past the OS's argument-length limit (this is what broke).
+          curl -s "$SUPABASE_URL/rest/v1/profiles?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -o tmp/profiles.json
+          curl -s "$SUPABASE_URL/rest/v1/gameweeks?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -o tmp/gameweeks.json
+          curl -s "$SUPABASE_URL/rest/v1/fixtures?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -o tmp/fixtures.json
+          curl -s "$SUPABASE_URL/rest/v1/predictions?select=*" -H "apikey: $SUPABASE_SERVICE_ROLE_KEY" -H "Authorization: Bearer $SUPABASE_SERVICE_ROLE_KEY" -o tmp/predictions_raw.json
 
-          # attach each prediction's username and fixture details so the backup is readable without a manual join
-          USERNAME_LOOKUP=$(echo "$PROFILES" | jq 'map({(.id): .username}) | add')
-          FIXTURE_LOOKUP=$(echo "$FIXTURES" | jq 'map({(.id): {gameweek: .gameweek_id, home_team: .home, away_team: .away}}) | add')
-          PREDICTIONS=$(echo "$PREDICTIONS_RAW" | jq --argjson ulookup "$USERNAME_LOOKUP" --argjson flookup "$FIXTURE_LOOKUP" \
-            'map(. + {username: $ulookup[.user_id]} + ($flookup[.fixture_id] // {gameweek: null, home_team: null, away_team: null}))')
+          # build username/fixture lookups as files too
+          jq '[.[] | {(.id): .username}] | add' tmp/profiles.json > tmp/username_lookup.json
+          jq '[.[] | {(.id): {gameweek: .gameweek_id, home_team: .home, away_team: .away}}] | add' tmp/fixtures.json > tmp/fixture_lookup.json
+
+          # enrich predictions with username + fixture details, reading lookups via --slurpfile
+          # (a file path, not an inline argument) so there's no size ceiling
+          jq --slurpfile ulookup tmp/username_lookup.json --slurpfile flookup tmp/fixture_lookup.json \
+            'map(. + {username: $ulookup[0][.user_id]} + ($flookup[0][.fixture_id] // {gameweek: null, home_team: null, away_team: null}))' \
+            tmp/predictions_raw.json > tmp/predictions.json
 
           jq -n \
             --arg exported_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --argjson profiles "$PROFILES" \
-            --argjson gameweeks "$GAMEWEEKS" \
-            --argjson fixtures "$FIXTURES" \
-            --argjson predictions "$PREDICTIONS" \
-            '{exported_at: $exported_at, profiles: $profiles, gameweeks: $gameweeks, fixtures: $fixtures, predictions: $predictions}' \
+            --slurpfile profiles tmp/profiles.json \
+            --slurpfile gameweeks tmp/gameweeks.json \
+            --slurpfile fixtures tmp/fixtures.json \
+            --slurpfile predictions tmp/predictions.json \
+            '{exported_at: $exported_at, profiles: $profiles[0], gameweeks: $gameweeks[0], fixtures: $fixtures[0], predictions: $predictions[0]}' \
             > "backups/backup-$DATE.json"
+
+          rm -rf tmp
 
       - name: Commit backup to the repo
         run: |
